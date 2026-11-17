@@ -1,41 +1,68 @@
 package com.zionyxerp.productos.services;
 
-import java.math.BigDecimal;
 import java.util.List;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.zionyxerp.productos.dto.ProductRequest;
 import com.zionyxerp.productos.dto.ProductResponse;
+import com.zionyxerp.productos.entity.Product;
 import com.zionyxerp.productos.exception.ProductNotFoundException;
+import com.zionyxerp.productos.repository.ProductRepository;
 
-@Service 
+import lombok.RequiredArgsConstructor;
+
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
 public class ProductService {
-    
-    private final List<ProductResponse> productos = List.of(
-        new ProductResponse(
-            1L,"Laptop","Laptop Empresarial",
-            new BigDecimal("21000.00"),true
-        ),
-        new ProductResponse(
-            2L,"Mouse","Mouse inalambrico",
-            new BigDecimal("800.00"),true
-        ),
-        new ProductResponse(
-            3L,"TV 45\" in","Digital Television",
-            new BigDecimal("21000.00"),true
-        ),
-        new ProductResponse(
-            4L,"Keyboard","Mechanical Keyboard",
-            new BigDecimal("1200.00"),true
-        )
-    );
 
-    public List<ProductResponse> findAll(){
-        return productos;
+    private final ProductRepository productRepository;
+
+    public List<ProductResponse> findAll() {
+        return productRepository.findAll().stream()
+                .map(this::toResponse)
+                .toList();
     }
 
-    public ProductResponse findById(Long pi_id){
-        return productos.stream()
-        .filter(productos -> productos.id().equals(pi_id))
-        .findFirst()
-        .orElseThrow(()->new ProductNotFoundException(pi_id));
+    public ProductResponse findById(Long id) {
+        return toResponse(getProduct(id));
+    }
+
+    @Transactional
+    public ProductResponse create(ProductRequest request) {
+        Product product = new Product();
+        apply(product, request);
+        return toResponse(productRepository.save(product));
+    }
+
+    @Transactional
+    public ProductResponse update(Long id, ProductRequest request) {
+        Product product = getProduct(id);
+        apply(product, request);
+        // No hace falta save(): JPA detecta el cambio (dirty checking) y hace el UPDATE al terminar la transacción
+        return toResponse(product);
+    }
+
+    @Transactional
+    public void delete(Long id) {
+        Product product = getProduct(id);
+        product.setActive(false);   // borrado lógico
+    }
+
+    // ---------- helpers ----------
+
+    private Product getProduct(Long id) {
+        return productRepository.findById(id)
+                .orElseThrow(() -> new ProductNotFoundException(id));
+    }
+
+    private void apply(Product product, ProductRequest request) {
+        product.setName(request.name());
+        product.setDescription(request.description());
+        product.setPrice(request.price());
+    }
+
+    private ProductResponse toResponse(Product p) {
+        return new ProductResponse(p.getId(), p.getName(), p.getDescription(), p.getPrice(), p.isActive());
     }
 }
