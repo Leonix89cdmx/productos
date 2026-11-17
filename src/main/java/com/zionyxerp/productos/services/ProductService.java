@@ -8,8 +8,11 @@ import com.zionyxerp.productos.dto.ProductResponse;
 import com.zionyxerp.productos.entity.Product;
 import com.zionyxerp.productos.exception.ProductNotFoundException;
 import com.zionyxerp.productos.repository.ProductRepository;
-
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
+import com.zionyxerp.productos.event.ProductEvent;
+import com.zionyxerp.productos.event.ProductEventType;
+
 
 @Service
 @RequiredArgsConstructor
@@ -17,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 public class ProductService {
 
     private final ProductRepository productRepository;
+    private final ApplicationEventPublisher eventPublisher;   // ← nuevo
 
     public List<ProductResponse> findAll() {
         return productRepository.findAll().stream()
@@ -28,25 +32,28 @@ public class ProductService {
         return toResponse(getProduct(id));
     }
 
-    @Transactional
+     @Transactional
     public ProductResponse create(ProductRequest request) {
         Product product = new Product();
         apply(product, request);
-        return toResponse(productRepository.save(product));
+        Product saved = productRepository.save(product);
+        eventPublisher.publishEvent(ProductEvent.of(ProductEventType.PRODUCT_CREATED, saved));
+        return toResponse(saved);
     }
 
     @Transactional
     public ProductResponse update(Long id, ProductRequest request) {
         Product product = getProduct(id);
         apply(product, request);
-        // No hace falta save(): JPA detecta el cambio (dirty checking) y hace el UPDATE al terminar la transacción
+        eventPublisher.publishEvent(ProductEvent.of(ProductEventType.PRODUCT_UPDATED, product));
         return toResponse(product);
     }
 
     @Transactional
     public void delete(Long id) {
         Product product = getProduct(id);
-        product.setActive(false);   // borrado lógico
+        product.setActive(false);
+        eventPublisher.publishEvent(ProductEvent.of(ProductEventType.PRODUCT_DEACTIVATED, product));
     }
 
     // ---------- helpers ----------
