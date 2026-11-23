@@ -1,0 +1,56 @@
+# Manifiesto de productos para EKS (lo usa Jenkinsfile.eks).
+# Diferencias con k8s/productos.yaml (Docker Desktop):
+#   - Sin Namespace: lo crea el administrador del cluster; Jenkins solo tiene permisos DENTRO de él.
+#   - Sin Ingress: el EKS de Floci no trae controlador de Ingress (en AWS real: AWS Load Balancer Controller → ALB).
+#   - La imagen viene de ECR (IMAGE se sustituye en el pipeline).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: productos
+  namespace: productos
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: productos
+  template:
+    metadata:
+      labels:
+        app: productos
+    spec:
+      containers:
+        - name: productos
+          image: IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: productos
+  namespace: productos
+spec:
+  selector:
+    app: productos
+  ports:
+    - port: 80
+      targetPort: 8080

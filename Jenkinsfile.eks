@@ -1,0 +1,91 @@
+// Pipeline de productos → ECR + EKS (Floci). Job de Jenkins: productos-eks.
+// El pipeline a Docker Desktop sigue en ./Jenkinsfile (job productos).
+//
+// Requisitos en Jenkins:
+//   - Credencial "Username with password" con ID 'aws-jenkins-ci'
+//     (usuario = Access key ID, contraseña = Secret access key del usuario IAM jenkins-ci).
+pipeline {
+    agent any
+
+    environment {
+        AWS_DEFAULT_REGION = 'us-east-1'
+        AWS_ENDPOINT_URL   = 'http://localhost.floci.io:4566'   // Floci. En AWS real: quitar esta línea.
+        ACCOUNT_ID         = '000000000000'
+        CLUSTER            = 'eks-lab'
+        NAMESPACE          = 'productos'
+        REPO               = 'productos'
+        IMAGE_TAG          = "${env.BUILD_NUMBER}"
+        // Floci usa dos nombres para el mismo registry (en AWS real es uno solo: <cuenta>.dkr.ecr.<región>.amazonaws.com):
+        ECR_PUSH = "${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.localhost.floci.io:4566"  // para docker push
+        ECR_PULL = "${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.localhost:4566"           // para los pods de EKS
+        // Config aislada por build: no toca el ~/.docker ni el ~/.kube del usuario jenkins
+        DOCKER_CONFIG = "${WORKSPACE}/.docker"
+        KUBECONFIG    = "${WORKSPACE}/.kube/eks"
+    }
+
+    stages {
+        stage('Test') {
+            steps {
+                sh './mvnw -B test'
+            }
+        }
+
+        stage('Build image') {
+            steps {
+                sh 'docker build -t ${REPO}:${IMAGE_TAG} .'
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-jenkins-ci',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        aws sts get-caller-identity --query Arn --output text
+                        aws ecr get-login-password | docker login --username AWS --password-stdin ${ECR_PUSH}
+                        docker tag ${REPO}:${IMAGE_TAG} ${ECR_PUSH}/${REPO}:${IMAGE_TAG}
+                        # El primer push a veces se cuelga en el proxy de Docker Desktop: reintentar
+                        for i in 1 2 3; do docker push ${ECR_PUSH}/${REPO}:${IMAGE_TAG} && break; echo "reintento $i..."; sleep 3; done
+                        aws ecr describe-images --repository-name ${REPO} --image-ids imageTag=${IMAGE_TAG} \
+                            --query 'imageDetails[0].imageTags' --output text
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-jenkins-ci',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        aws eks update-kubeconfig --name ${CLUSTER} --kubeconfig ${KUBECONFIG}
+                        sed "s|image: IMAGE|image: ${ECR_PULL}/${REPO}:${IMAGE_TAG}|" k8s/eks/productos.yaml | kubectl apply -f -
+                        kubectl rollout status deployment/productos -n ${NAMESPACE} --timeout=180s
+                        kubectl get pods -n ${NAMESPACE} -o wide
+                    '''
+                }
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-jenkins-ci',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    // Sin Ingress en el EKS de Floci: túnel directo al Service
+                    sh '''
+                        kubectl port-forward -n ${NAMESPACE} svc/productos 18090:80 > pf.log 2>&1 &
+                        PF=$!
+                        trap "kill $PF" EXIT
+                        curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18090/api/v1/products
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker logout ${ECR_PUSH} || true'
+        }
+    }
+}
